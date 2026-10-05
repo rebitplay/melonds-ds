@@ -156,9 +156,6 @@ void MelonDsDs::CoreState::Run() noexcept {
         // If the global state needed for rendering is ready...
         _inputState.Update(_screenLayout);
         _inputState.Apply(nds, _screenLayout, _micState);
-        std::array<int16_t, 735> buffer {};
-        _micState.Read(buffer);
-        nds.MicInputFrame(buffer.data(), buffer.size());
 
         if (_screenLayout.Dirty()) {
             // If the active screen layout has changed (either by settings or by hotkey)...
@@ -166,7 +163,7 @@ void MelonDsDs::CoreState::Run() noexcept {
             // Apply the new screen layout
             _screenLayout.Update();
 
-            RenderMode renderer = Console->GPU.GetRenderer3D().Accelerated ? RenderMode::OpenGl : RenderMode::Software;
+            RenderMode renderer = _renderState.GetRenderMode().value_or(RenderMode::Software);
             // And update the geometry
             if (!retro::set_geometry(_screenLayout.Geometry(renderer))) {
                 retro::warn("Failed to update geometry after screen layout change");

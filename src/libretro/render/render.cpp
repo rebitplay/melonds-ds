@@ -19,7 +19,7 @@
 #include "PlatformOGLPrivate.h"
 
 #include <NDS.h>
-#include <GPU3D_Soft.h>
+#include <GPU_Soft.h>
 #include <retro_assert.h>
 
 #include "config/config.hpp"
@@ -97,14 +97,21 @@ void MelonDsDs::RenderStateWrapper::UpdateRenderer(const CoreConfig& config, mel
 
     if (dynamic_cast<SoftwareRenderState*>(_renderState.get())) {
         // If we're configured to use the software renderer...
-        if (auto* softRender = dynamic_cast<melonDS::SoftRenderer*>(&nds.GetRenderer3D())) {
+        melonDS::RendererSettings settings {
+            .ScaleFactor = config.ScaleFactor(),
+            .Threaded = config.ThreadedSoftRenderer(),
+            .HiresCoordinates = false,
+            .BetterPolygons = config.BetterPolygonSplitting(),
+        };
+
+        if (auto* softRender = dynamic_cast<melonDS::SoftRenderer*>(&nds.GetRenderer())) {
             // ...and we already are...
-            softRender->SetThreaded(config.ThreadedSoftRenderer(), nds.GPU);
+            softRender->SetRenderSettings(settings);
         }
         else {
-            auto renderer = std::make_unique<melonDS::SoftRenderer>();
-            renderer->SetThreaded(config.ThreadedSoftRenderer(), nds.GPU);
-            nds.GPU.SetRenderer3D(std::move(renderer));
+            auto renderer = std::make_unique<melonDS::SoftRenderer>(nds);
+            renderer->SetRenderSettings(settings);
+            nds.GPU.SetRenderer(std::move(renderer));
         }
         return;
     }

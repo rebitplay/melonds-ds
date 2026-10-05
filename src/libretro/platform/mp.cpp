@@ -23,6 +23,10 @@
 
 using namespace melonDS;
 
+namespace MelonDsDs {
+    extern CoreState& Core;
+}
+
 constexpr retro_fastforwarding_override FASTFORWARD_OVERRIDE_FORBIDDEN = {
     1.0f,
     false,
@@ -30,10 +34,9 @@ constexpr retro_fastforwarding_override FASTFORWARD_OVERRIDE_FORBIDDEN = {
     true,
 };
 
-void MelonDsDs::CoreState::MpStarted(retro_netpacket_send_t send, retro_netpacket_poll_receive_t poll_receive) noexcept {
+void MelonDsDs::CoreState::MpStarted(uint16_t client_id, retro_netpacket_send_t send, retro_netpacket_poll_receive_t poll_receive) noexcept {
     ZoneScopedN(TracyFunction);
-    _mpState.SetSendFn(send);
-    _mpState.SetPollFn(poll_receive);
+    _mpState.Started(client_id, send, poll_receive);
     if (retro::set_fastforwarding_override(FASTFORWARD_OVERRIDE_FORBIDDEN)) {
         retro::info("Disabled fastforwarding for multiplayer");
     }
@@ -50,10 +53,29 @@ void MelonDsDs::CoreState::MpPacketReceived(const void *buf, size_t len, uint16_
 
 void MelonDsDs::CoreState::MpStopped() noexcept {
     ZoneScopedN(TracyFunction);
-    _mpState.SetSendFn(nullptr);
-    _mpState.SetPollFn(nullptr);
+    _mpState.Stopped();
     retro::clear_fastforwarding_override();
     retro::info("Stopping multiplayer on libretro side");
+}
+
+bool MelonDsDs::CoreState::MpConnected(uint16_t client_id) noexcept {
+    ZoneScopedN(TracyFunction);
+    return _mpState.Connected(client_id);
+}
+
+void MelonDsDs::CoreState::MpDisconnected(uint16_t client_id) noexcept {
+    ZoneScopedN(TracyFunction);
+    _mpState.Disconnected(client_id);
+}
+
+void MelonDsDs::CoreState::MpBegin() noexcept {
+    ZoneScopedN(TracyFunction);
+    _mpState.Begin();
+}
+
+void MelonDsDs::CoreState::MpEnd() noexcept {
+    ZoneScopedN(TracyFunction);
+    _mpState.End();
 }
 
 bool MelonDsDs::CoreState::MpSendPacket(const MelonDsDs::Packet &p) noexcept {
@@ -81,15 +103,33 @@ std::optional<MelonDsDs::Packet> MelonDsDs::CoreState::MpNextPacketBlock() noexc
     return _mpState.NextPacketBlock();
 }
 
+std::optional<MelonDsDs::Packet> MelonDsDs::CoreState::MpNextPacketOfTypeBlock(MelonDsDs::Packet::Type type) noexcept {
+    ZoneScopedN(TracyFunction);
+    if(!_mpState.IsReady()) {
+        return std::nullopt;
+    }
+    return _mpState.NextPacketOfTypeBlock(type);
+}
+
 bool MelonDsDs::CoreState::MpActive() const noexcept {
     return _mpState.IsReady();
+}
+
+uint16_t MelonDsDs::CoreState::MpClientId() const noexcept {
+    return _mpState.ClientId();
+}
+
+uint16_t MelonDsDs::CoreState::MpConnectedBitmask() const noexcept {
+    return _mpState.ConnectedBitmask();
 }
 
 // Not much we can do in Begin and End
 void Platform::MP_Begin(void*) {
     ZoneScopedN(TracyFunction);
+    MelonDsDs::Core.MpBegin();
 }
 
 void Platform::MP_End(void*) {
     ZoneScopedN(TracyFunction);
+    MelonDsDs::Core.MpEnd();
 }

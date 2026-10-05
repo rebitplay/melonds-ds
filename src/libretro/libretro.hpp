@@ -43,6 +43,8 @@ namespace MelonDsDs {
     extern "C" void MpStarted(uint16_t client_id, retro_netpacket_send_t send_fn, retro_netpacket_poll_receive_t poll_receive_fn) noexcept;
     extern "C" void MpReceived(const void* buf, size_t len, uint16_t client_id) noexcept;
     extern "C" void MpStopped() noexcept;
+    extern "C" bool MpConnected(uint16_t client_id) noexcept;
+    extern "C" void MpDisconnected(uint16_t client_id) noexcept;
 }
 
 #endif //MELONDS_DS_LIBRETRO_HPP

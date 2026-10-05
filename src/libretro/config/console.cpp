@@ -61,14 +61,25 @@ namespace MelonDsDs {
     const char* SENTINEL_NAME = "melon.dat";
     constexpr uint32_t RSA256_SIGNATURE_TYPE = 16777472;
 
-    static melonDS::NDSArgs GetNdsArgs(
+    struct NdsSetup {
+        melonDS::NDSArgs Args;
+        unique_ptr<melonDS::NDSCart::CartCommon> NdsCart;
+        unique_ptr<melonDS::GBACart::CartCommon> GbaCart;
+    };
+
+    struct DsiSetup {
+        melonDS::DSiArgs Args;
+        unique_ptr<melonDS::NDSCart::CartCommon> NdsCart;
+    };
+
+    static NdsSetup GetNdsSetup(
         const CoreConfig& config,
         const retro::GameInfo* ndsInfo,
         const retro::GameInfo* gbaInfo,
         const retro::GameInfo* gbaSaveInfo,
         CoreState& state
     );
-    static melonDS::DSiArgs GetDSiArgs(const CoreConfig& config, const retro::GameInfo* ndsInfo);
+    static DsiSetup GetDsiSetup(const CoreConfig& config, const retro::GameInfo* ndsInfo);
     static void ApplyCommonArgs(const CoreConfig& config, melonDS::NDSArgs& args) noexcept;
     static unique_ptr<melonDS::NDSCart::CartCommon> LoadNdsCart(const CoreConfig& config, const retro::GameInfo& ndsInfo);
     static unique_ptr<melonDS::GBACart::CartCommon> LoadGbaCart(const retro::GameInfo& gbaInfo, const retro::GameInfo* gbaSaveInfo);
@@ -141,11 +152,19 @@ std::unique_ptr<melonDS::NDS> MelonDsDs::CreateConsole(
                 "The DSi does not support GBA connectivity. Not loading the requested GBA ROM or SRAM."
             );
         }
-        return std::make_unique<melonDS::DSi>(GetDSiArgs(config, ndsInfo), &state);
+
+        DsiSetup setup = GetDsiSetup(config, ndsInfo);
+        auto console = std::make_unique<melonDS::DSi>(std::move(setup.Args), &state);
+        console->SetNDSCart(std::move(setup.NdsCart));
+        return console;
     }
     else {
         // If we're in DS mode...
-        return std::make_unique<melonDS::NDS>(GetNdsArgs(config, ndsInfo, gbaInfo, gbaSaveInfo, state), &state);
+        NdsSetup setup = GetNdsSetup(config, ndsInfo, gbaInfo, gbaSaveInfo, state);
+        auto console = std::make_unique<melonDS::NDS>(std::move(setup.Args), &state);
+        console->SetNDSCart(std::move(setup.NdsCart));
+        console->SetGBACart(std::move(setup.GbaCart));
+        return console;
     }
 }
 
@@ -161,7 +180,7 @@ void MelonDsDs::UpdateConsole(const CoreConfig& config, melonDS::NDS& nds) noexc
 // Then, fall back to other system files if needed and possible
 // If fallback is needed and not possible, throw an exception
 // Finally, install the system files
-static melonDS::NDSArgs MelonDsDs::GetNdsArgs(
+static MelonDsDs::NdsSetup MelonDsDs::GetNdsSetup(
     const CoreConfig& config,
     const retro::GameInfo* ndsInfo,
     const retro::GameInfo* gbaInfo,
@@ -208,7 +227,8 @@ static melonDS::NDSArgs MelonDsDs::GetNdsArgs(
         retro::debug("Not loading native ARM BIOS files");
     }
 
-    melonDS::NDSArgs ndsargs {};
+    NdsSetup setup {};
+    melonDS::NDSArgs& ndsargs = setup.Args;
 
     ApplyCommonArgs(config, ndsargs);
 
@@ -244,8 +264,8 @@ static melonDS::NDSArgs MelonDsDs::GetNdsArgs(
         retro::debug("Installed native ARM7 and ARM9 NDS BIOS images");
     }
     else {
-        ndsargs.ARM9BIOS = std::make_unique<melonDS::ARM9BIOSImage>(melonDS::bios_arm9_bin);
-        ndsargs.ARM7BIOS = std::make_unique<melonDS::ARM7BIOSImage>(melonDS::bios_arm7_bin);
+        ndsargs.ARM9BIOS = std::make_unique<melonDS::ARM9BIOSImage>(melonDS::FreeBIOSGetNtrArm9());
+        ndsargs.ARM7BIOS = std::make_unique<melonDS::ARM7BIOSImage>(melonDS::FreeBIOSGetNtrArm7());
         retro::debug("Installed built-in ARM7 and ARM9 NDS BIOS images");
     }
 
@@ -253,9 +273,9 @@ static melonDS::NDSArgs MelonDsDs::GetNdsArgs(
     ndsargs.Firmware = std::move(*firmware);
 
     if (ndsInfo) {
-        ndsargs.NDSROM = LoadNdsCart(config, *ndsInfo);
-        const uint8_t* romdata = ndsargs.NDSROM->GetROM();
-        const NDSHeader &header = ndsargs.NDSROM->GetHeader();
+        setup.NdsCart = LoadNdsCart(config, *ndsInfo);
+        const uint8_t* romdata = setup.NdsCart->GetROM();
+        const NDSHeader &header = setup.NdsCart->GetHeader();
 
         bool romDecrypted = (*(uint32_t*)&romdata[header.ARM9ROMOffset] == 0xE7FFDEFF && *(uint32_t*)&romdata[header.ARM9ROMOffset + 0x10] != 0xE7FFDEFF);
         if (!header.IsHomebrew() && !romDecrypted && !(bios7Loaded && bios9Loaded)) {
@@ -266,43 +286,43 @@ static melonDS::NDSArgs MelonDsDs::GetNdsArgs(
 
     if (gbaInfo) {
         // If loading a specific GBA ROM, then ignore the expansion paks
-        ndsargs.GBAROM = LoadGbaCart(*gbaInfo, gbaSaveInfo);
+        setup.GbaCart = LoadGbaCart(*gbaInfo, gbaSaveInfo);
     } else {
         switch (config.GetSlot2Device()) {
             case Slot2Device::MemoryExpansionPak:
-                ndsargs.GBAROM = std::make_unique<melonDS::GBACart::CartRAMExpansion>();
+                setup.GbaCart = std::make_unique<melonDS::GBACart::CartRAMExpansion>();
                 retro::debug("Installed built-in GBA Memory Expansion Pak");
                 break;
             case Slot2Device::RumblePak:
-                ndsargs.GBAROM = std::make_unique<melonDS::GBACart::CartRumblePak>(&state);
+                setup.GbaCart = std::make_unique<melonDS::GBACart::CartRumblePak>(&state);
                 retro::debug("Installed built-in GBA Rumble Pak");
                 break;
             case Slot2Device::SolarSensorBoktai1:
-                if (ndsargs.NDSROM) {
-                    ndsargs.GBAROM = melonDS::GBACart::CreateFakeSolarSensorROM("U3IE", *ndsargs.NDSROM);
+                if (setup.NdsCart) {
+                    setup.GbaCart = melonDS::GBACart::CreateFakeSolarSensorROM("U3IE", *setup.NdsCart);
                     // Add the Nintendo logo data from the NDS cart;
                     // GBA ROMs need this same data, or else the console will ignore them
                 }
                 else {
-                    ndsargs.GBAROM = melonDS::GBACart::CreateFakeSolarSensorROM("U3IE", nullptr);
+                    setup.GbaCart = melonDS::GBACart::CreateFakeSolarSensorROM("U3IE", nullptr);
                 }
                 retro::debug("Installed built-in Boktai 1 stub for the solar sensor");
                 break;
             case Slot2Device::SolarSensorBoktai2:
-                if (ndsargs.NDSROM) {
-                    ndsargs.GBAROM = melonDS::GBACart::CreateFakeSolarSensorROM("U32E", *ndsargs.NDSROM);
+                if (setup.NdsCart) {
+                    setup.GbaCart = melonDS::GBACart::CreateFakeSolarSensorROM("U32E", *setup.NdsCart);
                 }
                 else {
-                    ndsargs.GBAROM = melonDS::GBACart::CreateFakeSolarSensorROM("U32E", nullptr);
+                    setup.GbaCart = melonDS::GBACart::CreateFakeSolarSensorROM("U32E", nullptr);
                 }
                 retro::debug("Installed built-in Boktai 2 stub for the solar sensor");
                 break;
             case Slot2Device::SolarSensorBoktai3:
-                if (ndsargs.NDSROM) {
-                    ndsargs.GBAROM = melonDS::GBACart::CreateFakeSolarSensorROM("U33J", *ndsargs.NDSROM);
+                if (setup.NdsCart) {
+                    setup.GbaCart = melonDS::GBACart::CreateFakeSolarSensorROM("U33J", *setup.NdsCart);
                 }
                 else {
-                    ndsargs.GBAROM = melonDS::GBACart::CreateFakeSolarSensorROM("U33J", nullptr);
+                    setup.GbaCart = melonDS::GBACart::CreateFakeSolarSensorROM("U33J", nullptr);
                 }
                 retro::debug("Installed built-in Boktai 3 stub for the solar sensor");
                 break;
@@ -311,10 +331,10 @@ static melonDS::NDSArgs MelonDsDs::GetNdsArgs(
         }
     }
 
-    return ndsargs;
+    return setup;
 }
 
-static melonDS::DSiArgs MelonDsDs::GetDSiArgs(const CoreConfig& config, const retro::GameInfo* ndsInfo) {
+static MelonDsDs::DsiSetup MelonDsDs::GetDsiSetup(const CoreConfig& config, const retro::GameInfo* ndsInfo) {
     ZoneScopedN(TracyFunction);
     using namespace MelonDsDs::config::system;
     using namespace MelonDsDs::config::firmware;
@@ -358,10 +378,11 @@ static melonDS::DSiArgs MelonDsDs::GetDSiArgs(const CoreConfig& config, const re
         throw firmware_missing_exception(config.DsiFirmwarePath());
     }
 
-    if (firmware->GetHeader().ConsoleType != Firmware::FirmwareConsoleType::DSi) {
-        retro::warn("Expected firmware of type DSi, got {}", firmware->GetHeader().ConsoleType);
+    Firmware::FirmwareConsoleType firmwareType = static_cast<Firmware::FirmwareConsoleType>(firmware->GetHeader().ConsoleType);
+    if (firmwareType != Firmware::FirmwareConsoleType::DSi) {
+        retro::warn("Expected firmware of type DSi, got {}", firmwareType);
         throw wrong_firmware_type_exception(config.DsiFirmwarePath(), ConsoleType::DSi,
-                                            firmware->GetHeader().ConsoleType);
+                                            firmwareType);
     }
     // DSi firmware isn't bootable, so we don't need to check for that here.
 
@@ -376,7 +397,8 @@ static melonDS::DSiArgs MelonDsDs::GetDSiArgs(const CoreConfig& config, const re
     }
 
     NANDImage nand = LoadNANDImage(*nandPath, &(*arm7i)[0x8308]);
-    unique_ptr<melonDS::NDSCart::CartCommon> ndsRom = ndsInfo ? LoadNdsCart(config, *ndsInfo) : nullptr;
+    DsiSetup setup {};
+    setup.NdsCart = ndsInfo ? LoadNdsCart(config, *ndsInfo) : nullptr;
 
     { // Scoped to limit the mount's lifetime
         NANDMount mount(nand);
@@ -388,30 +410,29 @@ static melonDS::DSiArgs MelonDsDs::GetDSiArgs(const CoreConfig& config, const re
         const NDSHeader* header = ndsInfo ? reinterpret_cast<const NDSHeader*>(ndsInfo->GetData().data()) : nullptr;
         CustomizeNAND(config, mount, header, nandName);
 
-        if (ndsInfo && ndsRom != nullptr && ndsRom->GetHeader().IsDSiWare()) {
+        if (ndsInfo && setup.NdsCart != nullptr && setup.NdsCart->GetHeader().IsDSiWare()) {
             // If we're trying to play a DSiWare game...
             InstallDsiware(mount, *ndsInfo); // Temporarily install the game on the NAND
-            ndsRom = nullptr; // Don't want to insert the DSiWare into the cart slot
+            setup.NdsCart = nullptr; // Don't want to insert the DSiWare into the cart slot
         }
     }
 
-    melonDS::DSiArgs dsiargs {
-        {
-            .NDSROM = std::move(ndsRom),
-            .GBAROM = nullptr, // Irrelevant on DSi
-            .ARM9BIOS = std::move(arm9),
-            .ARM7BIOS = std::move(arm7),
-            .Firmware = std::move(*firmware),
-        },
+    melonDS::NDSArgs ndsargs {
+        std::move(arm9),
+        std::move(arm7),
+        std::move(*firmware),
+    };
+    setup.Args = melonDS::DSiArgs {
+        std::move(ndsargs),
         std::move(arm9i),
         std::move(arm7i),
         std::move(nand),
         LoadDSiSDCardImage(config),
     };
 
-    ApplyCommonArgs(config, dsiargs);
+    ApplyCommonArgs(config, setup.Args);
 
-    return dsiargs;
+    return setup;
 }
 
 static void MelonDsDs::ApplyCommonArgs(const CoreConfig& config, melonDS::NDSArgs& args) noexcept {
@@ -938,7 +959,7 @@ static optional<Firmware> MelonDsDs::LoadFirmware(const string& firmwarePath) no
     }
 
     melonDS::FirmwareIdentifier id = firmware->GetHeader().Identifier;
-    Firmware::FirmwareConsoleType type = firmware->GetHeader().ConsoleType;
+    Firmware::FirmwareConsoleType type = static_cast<Firmware::FirmwareConsoleType>(firmware->GetHeader().ConsoleType);
     retro::info(
         "Loaded {} firmware from \"{}\" (Identifier: {})",
         type,

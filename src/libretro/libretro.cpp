@@ -331,7 +331,7 @@ void Platform::WriteFirmware(const Firmware& firmware, u32 writeoffset, u32 writ
 }
 
 extern "C" void MelonDsDs::MpStarted(uint16_t client_id, retro_netpacket_send_t send_fn, retro_netpacket_poll_receive_t poll_receive_fn) noexcept {
-    MelonDsDs::Core.MpStarted(send_fn, poll_receive_fn);
+    MelonDsDs::Core.MpStarted(client_id, send_fn, poll_receive_fn);
 }
 
 extern "C" void MelonDsDs::MpReceived(const void* buf, size_t len, uint16_t client_id) noexcept {
@@ -340,6 +340,14 @@ extern "C" void MelonDsDs::MpReceived(const void* buf, size_t len, uint16_t clie
 
 extern "C" void MelonDsDs::MpStopped() noexcept {
     MelonDsDs::Core.MpStopped();
+}
+
+extern "C" bool MelonDsDs::MpConnected(uint16_t client_id) noexcept {
+    return MelonDsDs::Core.MpConnected(client_id);
+}
+
+extern "C" void MelonDsDs::MpDisconnected(uint16_t client_id) noexcept {
+    MelonDsDs::Core.MpDisconnected(client_id);
 }
 
 int DeconstructPacket(u8 *data, u64 *timestamp, const std::optional<MelonDsDs::Packet> &o_p) {
@@ -351,16 +359,98 @@ int DeconstructPacket(u8 *data, u64 *timestamp, const std::optional<MelonDsDs::P
     return o_p->Length();
 }
 
+namespace {
+    constexpr bool MP_DEBUG_LOGGING = false;
+
+    const char* MpPacketTypeName(MelonDsDs::Packet::Type type) {
+        switch (type) {
+            case MelonDsDs::Packet::Type::Reply:
+                return "reply";
+            case MelonDsDs::Packet::Type::Cmd:
+                return "cmd";
+            case MelonDsDs::Packet::Type::Ack:
+                return "ack";
+            case MelonDsDs::Packet::Type::Connect:
+                return "connect";
+            case MelonDsDs::Packet::Type::Disconnect:
+                return "disconnect";
+            case MelonDsDs::Packet::Type::Other:
+                return "other";
+        }
+        return "unknown";
+    }
+
+    u16 ReadLe16(const u8* data) {
+        u16 value = 0;
+        memcpy(&value, data, sizeof(value));
+        return value;
+    }
+
+    u16 MpFrameType(const u8* data, int len) {
+        if (data == nullptr || len < 14) {
+            return 0xFFFF;
+        }
+        return ReadLe16(&data[12]) & 0x00FF;
+    }
+
+    bool IsInterestingMgmtFrame(u16 frameType) {
+        return frameType == 0x0000 || frameType == 0x0010 || frameType == 0x00B0 || frameType == 0x00C0;
+    }
+
+    void LogMpFrame(const char* op, uint16_t localId, uint16_t peerId, MelonDsDs::Packet::Type packetType, const u8* data, int len, u16 aid, u64 timestamp) {
+        if constexpr (!MP_DEBUG_LOGGING) {
+            return;
+        }
+
+        u16 frameType = MpFrameType(data, len);
+        if (packetType == MelonDsDs::Packet::Type::Other && !IsInterestingMgmtFrame(frameType)) {
+            return;
+        }
+
+        u16 assocAid = 0;
+        if (len >= 12 + 24 + 6) {
+            assocAid = ReadLe16(&data[12 + 24 + 4]);
+        }
+
+        u16 clientTime = 0;
+        u16 clientMask = 0;
+        if (len >= 12 + 28) {
+            clientTime = ReadLe16(&data[12 + 24]);
+            clientMask = ReadLe16(&data[12 + 26]);
+        }
+
+        retro::info(
+            "MPDBG {} local={} peer={} type={} aid={} ft=0x{:04X} assoc_aid=0x{:04X} client_time={} client_mask=0x{:04X} len={} ts={}",
+            op,
+            localId,
+            peerId,
+            MpPacketTypeName(packetType),
+            aid,
+            frameType,
+            assocAid,
+            clientTime,
+            clientMask,
+            len,
+            timestamp
+        );
+    }
+}
+
 int Platform::MP_SendPacket(u8* data, int len, u64 timestamp, void*) {
+    LogMpFrame("send-packet", MelonDsDs::Core.MpClientId(), RETRO_NETPACKET_BROADCAST, MelonDsDs::Packet::Type::Other, data, len, 0, timestamp);
     return MelonDsDs::Core.MpSendPacket(MelonDsDs::Packet(data, len, timestamp, 0, MelonDsDs::Packet::Type::Other)) ? len : 0;
 }
 
 int Platform::MP_RecvPacket(u8* data, u64* timestamp, void*) {
     std::optional<MelonDsDs::Packet> o_p = MelonDsDs::Core.MpNextPacket();
+    if (o_p.has_value()) {
+        LogMpFrame("recv-packet", MelonDsDs::Core.MpClientId(), o_p->SenderId(), o_p->PacketType(), static_cast<const u8*>(o_p->Data()), o_p->Length(), o_p->Aid(), o_p->Timestamp());
+    }
     return DeconstructPacket(data, timestamp, o_p);
 }
 
 int Platform::MP_SendCmd(u8* data, int len, u64 timestamp, void*) {
+    LogMpFrame("send-cmd", MelonDsDs::Core.MpClientId(), RETRO_NETPACKET_BROADCAST, MelonDsDs::Packet::Type::Cmd, data, len, 0, timestamp);
     return MelonDsDs::Core.MpSendPacket(MelonDsDs::Packet(data, len, timestamp, 0, MelonDsDs::Packet::Type::Cmd)) ? len : 0;
 }
 
@@ -373,15 +463,20 @@ int Platform::MP_SendReply(u8 *data, int len, u64 timestamp, u16 aid, void*) {
     // [1] https://github.com/melonDS-emu/melonDS/blob/817b409ec893fb0b2b745ee18feced08706419de/src/net/LAN.cpp#L1074
     // [2] https://melonds.kuribo64.net/comments.php?id=25
     retro_assert(aid < 16);
+    LogMpFrame("send-reply", MelonDsDs::Core.MpClientId(), RETRO_NETPACKET_BROADCAST, MelonDsDs::Packet::Type::Reply, data, len, aid, timestamp);
     return MelonDsDs::Core.MpSendPacket(MelonDsDs::Packet(data, len, timestamp, aid, MelonDsDs::Packet::Type::Reply)) ? len : 0;
 }
 
 int Platform::MP_SendAck(u8* data, int len, u64 timestamp, void*) {
-    return MelonDsDs::Core.MpSendPacket(MelonDsDs::Packet(data, len, timestamp, 0, MelonDsDs::Packet::Type::Cmd)) ? len : 0;
+    LogMpFrame("send-ack", MelonDsDs::Core.MpClientId(), RETRO_NETPACKET_BROADCAST, MelonDsDs::Packet::Type::Ack, data, len, 0, timestamp);
+    return MelonDsDs::Core.MpSendPacket(MelonDsDs::Packet(data, len, timestamp, 0, MelonDsDs::Packet::Type::Ack)) ? len : 0;
 }
 
 int Platform::MP_RecvHostPacket(u8* data, u64 * timestamp, void*) {
     std::optional<MelonDsDs::Packet> o_p = MelonDsDs::Core.MpNextPacketBlock();
+    if (o_p.has_value()) {
+        LogMpFrame("recv-host", MelonDsDs::Core.MpClientId(), o_p->SenderId(), o_p->PacketType(), static_cast<const u8*>(o_p->Data()), o_p->Length(), o_p->Aid(), o_p->Timestamp());
+    }
     return DeconstructPacket(data, timestamp, o_p);
 }
 
@@ -390,9 +485,15 @@ u16 Platform::MP_RecvReplies(u8* packets, u64 timestamp, u16 aidmask, void*) {
         return 0;
     }
     u16 ret = 0;
-    int loops = 0;
-    while((ret & aidmask) != aidmask) {
-        std::optional<MelonDsDs::Packet> o_p = MelonDsDs::Core.MpNextPacketBlock();
+    u16 seenPeers = 0;
+    uint16_t clientId = MelonDsDs::Core.MpClientId();
+    if (clientId < 16) {
+        seenPeers |= 1 << clientId;
+    }
+    u16 connectedPeers = MelonDsDs::Core.MpConnectedBitmask();
+
+    for(;;) {
+        std::optional<MelonDsDs::Packet> o_p = MelonDsDs::Core.MpNextPacketOfTypeBlock(MelonDsDs::Packet::Type::Reply);
         if(!o_p.has_value()) {
             return ret;
         }
@@ -400,12 +501,17 @@ u16 Platform::MP_RecvReplies(u8* packets, u64 timestamp, u16 aidmask, void*) {
         if(p.Timestamp() < (timestamp - 32)) {
             continue;
         }
-        if(p.PacketType() != MelonDsDs::Packet::Type::Reply) {
-            continue;
+        if(p.Aid() > 0 && p.Aid() < 16) {
+            ret |= 1 << p.Aid();
+            memcpy(&packets[(p.Aid()-1)*1024], p.Data(), std::min(p.Length(), (uint64_t)1024));
         }
-        ret |= 1<<p.Aid();
-        memcpy(&packets[(p.Aid()-1)*1024], p.Data(), std::min(p.Length(), (uint64_t)1024));
-        loops++;
+        LogMpFrame("recv-reply", MelonDsDs::Core.MpClientId(), p.SenderId(), p.PacketType(), static_cast<const u8*>(p.Data()), p.Length(), p.Aid(), p.Timestamp());
+        if(p.SenderId() < 16) {
+            seenPeers |= 1 << p.SenderId();
+        }
+        connectedPeers = MelonDsDs::Core.MpConnectedBitmask();
+        if((ret & aidmask) == aidmask || (connectedPeers != 0 && (seenPeers & connectedPeers) == connectedPeers)) {
+            return ret;
+        }
     }
-    return ret;
 }

@@ -15,6 +15,7 @@
 */
 
 #include <array>
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <memory>
@@ -29,6 +30,7 @@
 
 #include "../environment.hpp"
 #include "../config/config.hpp"
+#include "../core/core.hpp"
 #include "../format.hpp"
 #include "retro/scaler.hpp"
 #include "sram.hpp"
@@ -106,4 +108,47 @@ void Platform::Camera_Stop(int num, void* userdata) {
 }
 
 void Platform::Camera_CaptureFrame(int num, u32 *frame, int width, int height, bool yuv, void* userdata) {
+}
+
+void MelonDsDs::CoreState::MicStart() noexcept {
+}
+
+void MelonDsDs::CoreState::MicStop() noexcept {
+}
+
+int MelonDsDs::CoreState::MicReadInput(int16_t* data, int max_length) noexcept {
+    if (data == nullptr || max_length <= 0) {
+        return 0;
+    }
+
+    _micState.Read(std::span<int16_t>(data, static_cast<size_t>(max_length)));
+    return max_length;
+}
+
+void Platform::Mic_Start(void* userdata) {
+    if (userdata != nullptr) {
+        static_cast<MelonDsDs::CoreState*>(userdata)->MicStart();
+    }
+}
+
+void Platform::Mic_Stop(void* userdata) {
+    if (userdata != nullptr) {
+        static_cast<MelonDsDs::CoreState*>(userdata)->MicStop();
+    }
+}
+
+int Platform::Mic_ReadInput(s16* data, int maxlength, void* userdata) {
+    if (data == nullptr || maxlength <= 0) {
+        return 0;
+    }
+
+    if (userdata == nullptr) {
+        std::fill_n(data, maxlength, 0);
+        return maxlength;
+    }
+
+    return static_cast<MelonDsDs::CoreState*>(userdata)->MicReadInput(
+        reinterpret_cast<int16_t*>(data),
+        maxlength
+    );
 }

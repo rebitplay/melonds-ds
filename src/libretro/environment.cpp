@@ -795,6 +795,8 @@ PUBLIC_SYMBOL void retro_set_environment(retro_environment_t cb) {
         .start = &MelonDsDs::MpStarted,
         .receive = &MelonDsDs::MpReceived,
         .stop = &MelonDsDs::MpStopped,
+        .connected = &MelonDsDs::MpConnected,
+        .disconnected = &MelonDsDs::MpDisconnected,
     };
     environment(RETRO_ENVIRONMENT_SET_NETPACKET_INTERFACE, &netpacket_callback);
 

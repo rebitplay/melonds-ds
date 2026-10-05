@@ -68,8 +68,16 @@ void MelonDsDs::SoftwareRenderState::Render(
         hybridScaler.SetOutSize(requiredHybridBufferSize.x, requiredHybridBufferSize.y);
     }
 
-    const uint32_t* topScreenBuffer = nds.GPU.Framebuffer[nds.GPU.FrontBuffer][0].get();
-    const uint32_t* bottomScreenBuffer = nds.GPU.Framebuffer[nds.GPU.FrontBuffer][1].get();
+    void* topFramebuffer = nullptr;
+    void* bottomFramebuffer = nullptr;
+    if (!nds.GPU.GetFramebuffers(&topFramebuffer, &bottomFramebuffer) || topFramebuffer == nullptr || bottomFramebuffer == nullptr) {
+        buffer.Clear();
+        retro::video_refresh(buffer[0], buffer.Width(), buffer.Height(), buffer.Stride());
+        return;
+    }
+
+    const uint32_t* topScreenBuffer = static_cast<const uint32_t*>(topFramebuffer);
+    const uint32_t* bottomScreenBuffer = static_cast<const uint32_t*>(bottomFramebuffer);
     CombineScreens(
         span<const uint32_t, NDS_SCREEN_AREA<size_t>>(topScreenBuffer, NDS_SCREEN_AREA<size_t>),
         span<const uint32_t, NDS_SCREEN_AREA<size_t>>(bottomScreenBuffer, NDS_SCREEN_AREA<size_t>),
@@ -197,4 +205,3 @@ void MelonDsDs::SoftwareRenderState::CombineScreens(
             CopyScreen(bottomBuffer.data(), screenLayout.GetBottomScreenTranslation(), layout);
     }
 }
-
